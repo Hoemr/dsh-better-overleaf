@@ -1,0 +1,14 @@
+# dsh-better-overleaf bundle patch: insert the dual-face plugin row into a web
+# profile. The node half (exports ".") provides ctx.overleaf and the /overleaf
+# routes; the browser half (exports "./client", discovered through the dsh.client
+# declaration) registers the Overleaf tab with dsh-better-sidebar when that
+# optional peer is mounted.
+- insert:
+    - id: overleaf
+      name: 'dsh-better-overleaf'
+      config:
+        transport: auto
+        loginUrl: 'https://www.overleaf.com/login'
+        browserChannel: auto
+        browserPath: ''
+        playwrightHeadless: false

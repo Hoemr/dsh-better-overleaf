@@ -1,0 +1,7 @@
+autoInstallPeers: false
+
+allowBuilds:
+  node-pty: true
+
+minimumReleaseAgeExclude:
+  - dsh-better-sidebar@0.12.2
