@@ -1,5 +1,5 @@
 /**
- * Build dsh-overleaf as a dual-face DSH plugin:
+ * Build dsh-better-overleaf as a dual-face DSH plugin:
  * - host pass: ESM `lib/index.js` loaded by the dsh web host;
  * - client pass: CJS `lib/client.js` closure registered through
  *   `window.__ModuleLoader__.load({ id, factory })`.
@@ -8,9 +8,19 @@
  * contract without importing the harness workspace. CSS Modules are not used
  * yet; add a lightningcss virtual-loader mirror when the tab grows styles.
  */
+import { readFileSync } from 'node:fs'
 import { defineConfig } from 'tsdown'
 
-const ID = 'dsh-overleaf'
+// ID must be the npm package name (package.json `name`) — the DSH plugin
+// contract enforces it in THREE places at once:
+//   1. host bundle identity: node_modules/<name> must be a package named <name>;
+//   2. loader row name (cordis.patch.yml `name:`);
+//   3. client bundle registration id (the client module system looks the
+//      factory up by entry id == package name).
+// Deriving it here makes renames impossible to forget; never hardcode.
+const { name: ID } = JSON.parse(
+  readFileSync(new URL('./package.json', import.meta.url), 'utf8'),
+) as { name: string }
 
 const CLIENT_EXTERNALS = ['react', 'react/jsx-runtime'] as const
 

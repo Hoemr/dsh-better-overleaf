@@ -60,7 +60,7 @@ Third-party Chromium browsers (CentBrowser, Brave, Vivaldi, …) are supported:
 
 ```sh
 dsh plugin --profile desktop add dsh-better-sidebar@0.13.1    # or @0.14+ on DSH rc.8
-dsh plugin --profile desktop add dsh-better-overleaf@0.2.0
+dsh plugin --profile desktop add dsh-better-overleaf@0.2.1
 # then restart the app so the host halves mount; hard-refresh the web view
 
 # dev flow:
