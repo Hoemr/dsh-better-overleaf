@@ -1,8 +1,8 @@
 /**
- * dsh-overleaf package root. The default export is the Cordis Service class
+ * dsh-better-overleaf package root. The default export is the Cordis Service class
  * the web composition mounts as the `overleaf` row; the class provides
  * `ctx.overleaf` and owns the /overleaf route surface.
- * @module dsh-overleaf
+ * @module dsh-better-overleaf
  */
 export { default, name, inject, Config, OverleafService } from './service.ts'
 export type {
@@ -10,6 +10,14 @@ export type {
   OverleafSyncResult, OverleafTransportKind, OverleafWireResponse, OverleafWorkspaceBindings,
 } from './types.ts'
 export { OVERLEAF_COOKIE, OVERLEAF_GIT_TOKEN } from './credentials.ts'
+export { hasLatexmk, pickEntryTex } from './compile.ts'
+export type { OverleafCompileResult } from './types.ts'
+export {
+  loadRegistry, markSynced, removeRegistryBinding, savePolicy, upsertRegistryBinding,
+} from './registry.ts'
+export type { RegistryBinding } from './registry.ts'
+export { registerOverleafTools } from './tools.ts'
+export type { OverleafToolFacade } from './tools.ts'
 export {
   BINDING_FILENAME, MIRRORS_DIRNAME, listWorkspaceBindings, readBinding, removeBinding,
   safeMirrorName, writeBinding,

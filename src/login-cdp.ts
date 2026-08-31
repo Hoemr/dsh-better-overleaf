@@ -30,7 +30,7 @@ export type LoginProfileMode = 'persistent' | 'temporary'
 
 /** Stable dedicated profile directory for persistent login sessions. */
 export function persistentLoginProfileDir(): string {
-  return join(homedir(), '.dsh', 'plugin-data', 'dsh-overleaf', 'browser-profile')
+  return join(homedir(), '.dsh', 'plugin-data', 'dsh-better-overleaf', 'browser-profile')
 }
 
 /** Login orchestration options. */
@@ -389,7 +389,7 @@ async function loginWithExecutable(executablePath: string, options: LoginOptions
     profileDir = persistentLoginProfileDir()
     await mkdir(profileDir, { recursive: true })
   } else {
-    profileDir = await mkdtemp(join(tmpdir(), 'dsh-overleaf-cdp-'))
+    profileDir = await mkdtemp(join(tmpdir(), 'dsh-better-overleaf-cdp-'))
     tempProfileDir = profileDir
   }
   const child = spawn(executablePath, [

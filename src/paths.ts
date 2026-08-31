@@ -2,9 +2,9 @@
  * Mirror-path and binding-file helpers. One binding lives inside its mirror
  * directory as `.overleaf.json`; the file is auto-appended to the mirror's
  * `.git/info/exclude` so better-sidebar's Git panel never shows it as noise.
- * @module dsh-overleaf/paths
+ * @module dsh-better-overleaf/paths
  */
-import { mkdir, readFile, readdir, rm, writeFile, appendFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rm, stat, writeFile, appendFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { OverleafBinding } from './types.ts'
 
@@ -95,6 +95,22 @@ export async function allocateMirrorDir(workspacePath: string, name: string): Pr
   }
   await mkdir(candidate, { recursive: true })
   return candidate
+}
+
+/**
+ * Whether an existing directory can be claimed as a mirror: it exists, is a
+ * directory, and carries a `.git` entry. A claim only writes the binding file
+ * (re-binding a mirror whose binding file was lost), never touching content.
+ */
+export async function isClaimableMirror(dir: string): Promise<boolean> {
+  try {
+    const info = await stat(dir)
+    if (!info.isDirectory()) return false
+    await stat(join(dir, '.git'))
+    return true
+  } catch {
+    return false
+  }
 }
 
 async function exists(path: string): Promise<boolean> {

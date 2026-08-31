@@ -10,7 +10,7 @@ import { OverleafApiTransport } from '../src/transports.ts'
 const tempDirs: string[] = []
 
 async function makeTempDir(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), 'dsh-overleaf-test-'))
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-better-overleaf-test-'))
   tempDirs.push(dir)
   return dir
 }
