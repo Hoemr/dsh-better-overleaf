@@ -3,8 +3,9 @@
  * decodes the shared `{ ok, value | error }` envelope.
  */
 import type {
-  OverleafBinding, OverleafLoginResult, OverleafProject, OverleafStatus, OverleafSyncDirection,
-  OverleafSyncResult, OverleafWireResponse, OverleafWorkspaceBindings,
+  OverleafAutoSyncPolicy, OverleafBinding, OverleafCompileResult, OverleafLoginResult, OverleafProject,
+  OverleafRemoteStatus, OverleafStatus, OverleafSyncDirection, OverleafSyncResult, OverleafWireResponse,
+  OverleafWorkspaceBindings,
 } from '../types.ts'
 
 /** Transport error used when fetch or JSON decoding fails. */
@@ -70,4 +71,22 @@ export const overleafApi = {
   /** Pull or push one bound mirror. */
   sync: async (mirrorPath: string, direction: OverleafSyncDirection) =>
     unwrap(await post<OverleafSyncResult>('/overleaf/sync', { mirrorPath, direction })),
+  /** Read one mirror's live remote position (fetch + ahead/behind). */
+  remoteStatus: async (mirrorPath: string) =>
+    unwrap(await post<OverleafRemoteStatus>('/overleaf/remote-status', { mirrorPath })),
+  /** Compile one mirror locally with latexmk. */
+  compile: async (mirrorPath: string) =>
+    unwrap(await post<OverleafCompileResult>('/overleaf/compile', { mirrorPath })),
+  /** Whether latexmk is runnable on the host machine. */
+  latexmk: async () =>
+    (await unwrap(await post<{ available: boolean }>('/overleaf/latexmk', {}))).available,
+  /** Upgrade a snapshot-only mirror to two-way git sync (splices history). */
+  upgradeTransport: async (mirrorPath: string) =>
+    unwrap(await post<OverleafBinding & { branch: string; message: string }>('/overleaf/upgrade-transport', { mirrorPath })),
+  /** Read the auto-sync policy. */
+  autoSync: async () =>
+    unwrap(await post<OverleafAutoSyncPolicy>('/overleaf/auto-sync', {})),
+  /** Persist a new auto-sync policy. */
+  setAutoSync: async (policy: OverleafAutoSyncPolicy) =>
+    unwrap(await post<OverleafAutoSyncPolicy>('/overleaf/auto-sync/set', { policy })),
 }

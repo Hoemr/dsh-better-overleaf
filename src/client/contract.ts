@@ -3,7 +3,7 @@
  * when the better-sidebar row is not mounted this client contributes nothing.
  *
  * This is a structural mirror of `dsh-better-sidebar/client/service`'s
- * `TabDescriptor`/`TabComponentProps`/`BetterSidebarService` subset dsh-overleaf
+ * `TabDescriptor`/`TabComponentProps`/`BetterSidebarService` subset dsh-better-overleaf
  * uses, so the repository still builds when the optional peer is not installed.
  * Aligned with dsh-better-sidebar 0.13.x / 0.14.x.
  */
@@ -31,7 +31,7 @@ export interface SidebarTabRecord {
 export interface BetterSidebarTabProps {
   /** The client Cordis context of the sidebar session. */
   ctx: unknown
-  /** The sidebar store; opaque to dsh-overleaf. */
+  /** The sidebar store; opaque to dsh-better-overleaf. */
   store: unknown
   /** The session scope this tab instance belongs to. */
   scope: SidebarSessionScope
@@ -53,6 +53,8 @@ export interface OverleafTabDefinition {
   icon?: ReactNode | ((size: number) => ReactNode)
   /** Keep one Overleaf tab per session instead of opening duplicates. */
   single?: boolean
+  /** Badge on the tab strip (pending pull/push counts). */
+  badge?: (ctx: unknown, scope: SidebarSessionScope, state: unknown) => string | number | null | undefined
   /** Tab body component; receives the standard tab props and may ignore them. */
   component: (props: BetterSidebarTabProps) => ReactNode
 }
@@ -65,10 +67,52 @@ export interface OpenTabSeed {
   title?: string
 }
 
+/**
+ * Structural mirror of better-sidebar's `FileViewerDescriptor` (0.17.x). A
+ * descriptor claims one file extension with a priority: higher wins over
+ * built-ins (which register at 0).
+ */
+export interface FileViewerDescriptor {
+  /** Unique viewer id (namespaced). */
+  id: string
+  /** Display name for the sidebar's viewer inventory. */
+  title?: string | (() => string)
+  /** Icon shown in the inventory. */
+  icon?: ReactNode | ((size: number) => ReactNode)
+  /** Lowercase extensions without dot; `[]` matches any path. */
+  exts: readonly string[]
+  /** Higher wins; built-ins use 0, the catch-all code viewer uses -100. */
+  priority?: number
+  /** How the sidebar loads bytes for the viewer. */
+  fetchStrategy: 'none' | 'fsRead' | 'mediaUrl' | 'custom' | 'binary-download'
+  /** Content sniff consulted before `exts` when head bytes are available. */
+  detect?: (path: string, head: Uint8Array) => boolean
+  /** `fetchStrategy='custom'` loader. */
+  load?: (path: string, scope: SidebarSessionScope, signal?: AbortSignal) => Promise<unknown>
+  component: (props: FileViewerProps) => ReactNode
+}
+
+/** Structural mirror of better-sidebar's `FileViewerProps`. */
+export interface FileViewerProps {
+  ctx: unknown
+  store: unknown
+  scope: SidebarSessionScope
+  path: string
+  title: string
+  viewerId: string
+  content?: string
+  truncated?: boolean
+  /** Resolved media URL for `fetchStrategy='mediaUrl'`. */
+  mediaUrl?: string
+  customData?: unknown
+}
+
 /** The registry service dsh-better-sidebar publishes as `ctx.betterSidebar`. */
 export interface BetterSidebarRegistry {
   /** Register one tab descriptor; the returned disposer removes it. */
   registerTab(descriptor: OverleafTabDefinition): () => void
+  /** Register one file viewer; the returned disposer removes it. */
+  registerFileViewer?(descriptor: FileViewerDescriptor): () => void
   /** Open (or focus) one tab by type in the given session scope. */
   openTab?(seed: OpenTabSeed, scope?: SidebarSessionScope): void
   /** Open a workspace file in the editor of the given session scope. */

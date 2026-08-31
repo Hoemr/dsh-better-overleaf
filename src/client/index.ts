@@ -1,19 +1,25 @@
 /**
- * dsh-overleaf browser half. Registers the Overleaf tab with the optional
- * dsh-better-sidebar registry. Without better-sidebar the plugin activates but
- * contributes no surface, matching the optional peer contract.
+ * dsh-better-overleaf browser half. Registers the Overleaf tab plus the
+ * pdf.js-based PDF viewer with the optional dsh-better-sidebar registry. The
+ * tab badge mirrors the live sync aggregate (pending pull + push + dirty
+ * mirrors) from the module sync store. Without better-sidebar the plugin
+ * activates but contributes no surface, matching the optional peer contract.
  */
 import { createElement } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import { clearActiveBetterSidebar, registerBetterSidebarTab } from './contract.ts'
 import type { BetterSidebarRegistry } from './contract.ts'
 import { OverleafManager } from './OverleafManager.tsx'
-import { OverleafIcon } from './icons.tsx'
+import { OverleafIcon, PdfIcon } from './icons.tsx'
+import { PdfViewer } from './PdfViewer.tsx'
+import { summaryFor } from './sync-store.ts'
 
 export type { BetterSidebarRegistry, OverleafTabDefinition } from './contract.ts'
+export { OverleafManager } from './OverleafManager.tsx'
+export { PdfViewer } from './PdfViewer.tsx'
 
 /** Stable client plugin name. */
-export const name = 'dsh-overleaf-client'
+export const name = 'dsh-better-overleaf-client'
 
 /** Find the better-sidebar tab registry across its supported service keys. */
 function findBetterSidebar(ctx: Context): BetterSidebarRegistry | undefined {
@@ -50,13 +56,32 @@ export function apply(ctx: Context): void {
           single: true,
           icon: (size: number) => createElement(OverleafIcon, { size }),
           component: OverleafManager,
+          badge: (_tabCtx, scope) => {
+            const summary = summaryFor(scope?.cwd)
+            const pending = summary.behind + summary.dirty
+            return pending > 0 ? pending : summary.ahead > 0 ? summary.ahead : undefined
+          },
+        })
+        const disposeViewer = betterSidebar.registerFileViewer?.({
+          id: 'overleaf-pdf',
+          title: 'PDF 阅读器（Overleaf）',
+          icon: (size: number) => createElement(PdfIcon, { size }),
+          exts: ['pdf'],
+          priority: 10,
+          fetchStrategy: 'mediaUrl',
+          component: props => createElement(PdfViewer, {
+            ...(props.mediaUrl !== undefined ? { mediaUrl: props.mediaUrl } : {}),
+            path: props.path,
+            title: props.title,
+          }),
         })
         return (): void => {
           clearActiveBetterSidebar()
+          disposeViewer?.()
           disposeTab()
         }
       },
-      'dsh-overleaf: better-sidebar tab',
+      'dsh-better-overleaf: better-sidebar tab + pdf viewer',
     )
   }
   for (const key of BETTER_SIDEBAR_KEYS) {

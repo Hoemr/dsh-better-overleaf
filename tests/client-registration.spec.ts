@@ -45,15 +45,15 @@ beforeAll(async () => {
   }
 })
 
-describe('dsh-overleaf client registration', () => {
+describe('dsh-better-overleaf client registration', () => {
   it('captures the bundle through the ModuleLoader banner', () => {
-    expect(loaded?.id).toBe('dsh-overleaf')
+    expect(loaded?.id).toBe('dsh-better-overleaf')
   })
 
   it('registers the Overleaf tab when better-sidebar appears', () => {
     const nodeRequire = createRequire(clientPath)
     const mod = loaded.factory(nodeRequire)
-    expect(mod.name).toBe('dsh-overleaf-client')
+    expect(mod.name).toBe('dsh-better-overleaf-client')
 
     const injected: CapturedInject[] = []
     const captured: CapturedTab[] = []
