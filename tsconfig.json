@@ -25,6 +25,5 @@
     "outDir": "lib/types",
     "types": ["node"]
   },
-  "include": ["src"],
-  "exclude": ["src/login.ts", "src/login-browser.ts"]
+  "include": ["src"]
 }

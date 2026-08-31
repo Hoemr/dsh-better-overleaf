@@ -9,7 +9,25 @@
  * yet; add a lightningcss virtual-loader mirror when the tab grows styles.
  */
 import { readFileSync } from 'node:fs'
-import { defineConfig } from 'tsdown'
+import { defineConfig, type Plugin } from 'tsdown'
+
+// `?raw` suffix inlining (the pdf.js worker source ships as a string so the
+// single-file client bundle can blob it into a worker without extra assets).
+// Rolldown's built-in ?raw mishandles Windows paths, hence this explicit pass.
+function rawLoader(): Plugin {
+  return {
+    name: 'dsh-overleaf:raw-loader',
+    async resolveId(source, importer, options) {
+      if (!source.endsWith('?raw')) return null
+      const resolved = await this.resolve(source.slice(0, -4), importer, { ...options, skipSelf: true })
+      return resolved === null ? null : `${resolved.id}?raw`
+    },
+    load(id) {
+      if (!id.endsWith('?raw')) return null
+      return `export default ${JSON.stringify(readFileSync(id.slice(0, -4), 'utf8'))}`
+    },
+  }
+}
 
 // ID must be the npm package name (package.json `name`) — the DSH plugin
 // contract enforces it in THREE places at once:
@@ -54,6 +72,7 @@ export default defineConfig([
     clean: false,
     external: [...CLIENT_EXTERNALS],
     define: CLIENT_DEFINES,
+    plugins: [rawLoader()],
     noExternal: id => !CLIENT_EXTERNALS.includes(id as (typeof CLIENT_EXTERNALS)[number]),
     outputOptions: {
       entryFileNames: 'client.js',

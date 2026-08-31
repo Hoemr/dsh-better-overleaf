@@ -1,4 +1,4 @@
-# Post-restart smoke test for the dsh-overleaf host routes.
+# Post-restart smoke test for the dsh-better-overleaf host routes.
 # Usage: powershell -File scripts\smoke-routes.ps1 [-Port 59527]
 param(
   [int]$Port = 59527
@@ -20,13 +20,13 @@ function Invoke-OverleafRoute([string]$Path, [object]$Body) {
   }
 }
 
-Write-Host "== dsh-overleaf smoke against $base =="
+Write-Host "== dsh-better-overleaf smoke against $base =="
 
 $status = Invoke-OverleafRoute '/overleaf/status' @{}
 Write-Host ("status   -> {0} ok={1} loggedIn={2} gitConfigured={3}" -f `
   $status.Status, $status.Ok, $status.Payload.value.loggedIn, $status.Payload.value.gitConfigured)
 
-$temp = Join-Path ([System.IO.Path]::GetTempPath()) ("dsh-overleaf-smoke-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+$temp = Join-Path ([System.IO.Path]::GetTempPath()) ("dsh-better-overleaf-smoke-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Path $temp | Out-Null
 try {
   $bindings = Invoke-OverleafRoute '/overleaf/bindings' @{ workspacePath = $temp }

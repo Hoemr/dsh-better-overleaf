@@ -37,7 +37,7 @@ CDP port; after you log in, the session cookie is captured browser-side and
 stored host-side. No Playwright download, no ChromeDriver.
 
 **Persistent profile (default)** — the login window uses a dedicated dsh
-profile at `~/.dsh/plugin-data/dsh-overleaf/browser-profile`. You enter your
+profile at `~/.dsh/plugin-data/dsh-better-overleaf/browser-profile`. You enter your
 credentials (or link Google OAuth) **once**; every later login opens that
 profile already authenticated and captures the cookie without typing anything.
 Set `loginProfile: temporary` to wipe the profile after each attempt instead.
@@ -64,7 +64,7 @@ dsh plugin --profile desktop add dsh-better-overleaf@0.2.1
 # then restart the app so the host halves mount; hard-refresh the web view
 
 # dev flow:
-# dsh plugin --profile desktop add link:D:/Coding/dsh-overleaf
+# dsh plugin --profile desktop add link:D:/Coding/dsh-better-overleaf
 ```
 
 If pnpm reports ignored build scripts for `node-pty`, set
