@@ -92,18 +92,22 @@ async function call(routes: Map<string, RouteHandler>, path: string, payload: un
 const tempDirs: string[] = []
 
 async function makeTempDir(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), 'dsh-overleaf-svc-'))
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-better-overleaf-svc-'))
   tempDirs.push(dir)
   return dir
 }
 
 let ctx: Context
 
-beforeEach(() => {
+beforeEach(async () => {
   ctx = new Context()
+  // Isolate the mirror registry: bind/upgrade tests must never touch the
+  // real ~/.dsh/plugin-data store on the developer's machine.
+  process.env.DSH_HOME = await makeTempDir()
 })
 
 afterEach(async () => {
+  delete process.env.DSH_HOME
   await Promise.all(tempDirs.splice(0).map(dir => rm(dir, { recursive: true, force: true }).catch(() => undefined)))
 })
 
@@ -114,15 +118,21 @@ describe('OverleafService mounting', () => {
     await ctx.plugin(OverleafService, {} as Config)
     const routes = ctx.webServer.routes as Map<string, RouteHandler>
     expect([...routes.keys()].sort()).toEqual([
+      '/overleaf/auto-sync',
+      '/overleaf/auto-sync/set',
       '/overleaf/bind',
       '/overleaf/bindings',
+      '/overleaf/compile',
       '/overleaf/cookie',
       '/overleaf/git-token',
+      '/overleaf/latexmk',
       '/overleaf/login',
       '/overleaf/projects',
+      '/overleaf/remote-status',
       '/overleaf/status',
       '/overleaf/sync',
       '/overleaf/unbind',
+      '/overleaf/upgrade-transport',
     ])
   })
 
@@ -224,7 +234,7 @@ describe('bind via the API seed path (mock Overleaf, real zip + git)', () => {
     const workspacePath = await makeTempDir()
 
     // Build the snapshot zip the mocked download endpoint will serve.
-    const staging = await makeTempDir('dsh-overleaf-bind-stage-')
+    const staging = await makeTempDir('dsh-better-overleaf-bind-stage-')
     await writeFile(join(staging, 'main.tex'), '\\documentclass{article}\n')
     await mkdir(join(staging, 'figures'))
     await writeFile(join(staging, 'figures', 'fig.png'), 'png-bytes')
@@ -296,6 +306,120 @@ describe('bind via the API seed path (mock Overleaf, real zip + git)', () => {
       const { envelope } = await call(routes, '/overleaf/bind', { workspacePath, projectId })
       expect(envelope.ok).toBe(false)
       expect((envelope.error as { message: string }).message).toContain('not visible')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('claims an existing git directory instead of allocating a fresh mirror', async () => {
+    const projectId = 'claim00000000000000000'
+    const workspacePath = await makeTempDir()
+    vi.stubGlobal('fetch', vi.fn(async (): Promise<Response> =>
+      new Response(JSON.stringify([{ id: projectId, name: 'My Paper' }]), { status: 200 })))
+    try {
+      await ctx.plugin(MockWebServer)
+      await ctx.plugin(MockCredentials)
+      await ctx.plugin(OverleafService, {} as Config)
+      ;(ctx.credentials as MockCredentials).store.set('OVERLEAF_COOKIE', 'session=1')
+      const routes = ctx.webServer.routes as Map<string, RouteHandler>
+
+      // A pre-existing mirror whose binding file was lost (older snapshot
+      // pulls wiped it): content present, git repo present, no .overleaf.json.
+      const existing = join(workspacePath, 'overleaf', 'My Paper')
+      await mkdir(existing, { recursive: true })
+      await writeFile(join(existing, 'main.tex'), '\\documentclass{article}\nlocal work\n')
+      spawnSync('git', ['init', '-b', 'main'], { cwd: existing })
+      spawnSync('git', ['config', 'user.name', 'test'], { cwd: existing })
+      spawnSync('git', ['config', 'user.email', 'test@local'], { cwd: existing })
+      spawnSync('git', ['add', '.'], { cwd: existing })
+      spawnSync('git', ['commit', '-m', 'local snapshot'], { cwd: existing })
+
+      const saved = await call(routes, '/overleaf/bind', {
+        workspacePath,
+        projectId,
+        transport: 'api',
+      })
+      expect(saved.envelope.ok).toBe(true)
+      const binding = saved.envelope.value as { mirrorPath: string }
+      expect(binding.mirrorPath).toBe(existing)
+      // The claim must not touch the files beyond writing the binding file.
+      await expect(readFile(join(existing, 'main.tex'), 'utf8')).resolves.toContain('local work')
+      await expect(readFile(join(existing, '.overleaf.json'), 'utf8')).resolves.toContain(projectId)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('upgrades a snapshot mirror to git sync and pushes onto the bridge history', { timeout: 120_000 }, async () => {
+    const projectId = 'upgrade00000000000000'
+    const bridgeRoot = await makeTempDir()
+    const mirrorPath = join(bridgeRoot, 'overleaf', 'My Paper')
+
+    // Fake Overleaf bridge: a bare repo standing in for git.overleaf.com/<id>.
+    // The transport resolves the remote as <gitOrigin>/<projectId>, so the
+    // bare repo must be named after the project id.
+    const bare = join(bridgeRoot, `${projectId}.git`)
+    const seed = join(bridgeRoot, 'seed')
+    spawnSync('git', ['init', '--bare', '-b', 'main', bare])
+    spawnSync('git', ['clone', bare, seed])
+    spawnSync('git', ['config', 'user.name', 'test'], { cwd: seed })
+    spawnSync('git', ['config', 'user.email', 'test@local'], { cwd: seed })
+    await writeFile(join(seed, 'remote.tex'), 'from overleaf\n')
+    spawnSync('git', ['add', '.'], { cwd: seed })
+    spawnSync('git', ['commit', '-m', 'bridge history'], { cwd: seed })
+    spawnSync('git', ['push', 'origin', 'HEAD:main'], { cwd: seed })
+
+    // The snapshot mirror: plain git repo with local content, no remote —
+    // exactly what the api transport leaves behind. It carries remote.tex as
+    // a real snapshot would (pulled from Overleaf earlier).
+    await mkdir(mirrorPath, { recursive: true })
+    await writeFile(join(mirrorPath, 'remote.tex'), 'from overleaf\n')
+    await writeFile(join(mirrorPath, 'local.tex'), 'local edits\n')
+    spawnSync('git', ['init', '-b', 'main'], { cwd: mirrorPath })
+    spawnSync('git', ['config', 'user.name', 'test'], { cwd: mirrorPath })
+    spawnSync('git', ['config', 'user.email', 'test@local'], { cwd: mirrorPath })
+    spawnSync('git', ['add', '.'], { cwd: mirrorPath })
+    spawnSync('git', ['commit', '-m', 'snapshot'], { cwd: mirrorPath })
+
+    // Git operations inside the mirror must reach the local bare bridge; the
+    // token guard only checks presence.
+    const originUrl = `${bare.replaceAll('\\', '/')}`
+    vi.stubGlobal('fetch', vi.fn(async (): Promise<Response> =>
+      new Response(JSON.stringify([{ id: projectId, name: 'My Paper' }]), { status: 200 })))
+    const gitOrigin = `file:///${bridgeRoot.replaceAll('\\', '/')}`
+    try {
+      await ctx.plugin(MockWebServer)
+      await ctx.plugin(MockCredentials)
+      await ctx.plugin(OverleafService, { gitOrigin } as unknown as Config)
+      ;(ctx.credentials as MockCredentials).store.set('OVERLEAF_COOKIE', 'session=1')
+      ;(ctx.credentials as MockCredentials).store.set('OVERLEAF_GIT_TOKEN', 'local-test-token')
+      const routes = ctx.webServer.routes as Map<string, RouteHandler>
+
+      // Claim the pre-existing snapshot directory (transport api, no seed).
+      const bound = await call(routes, '/overleaf/bind', { workspacePath: bridgeRoot, projectId, transport: 'api' })
+      expect(bound.envelope.ok).toBe(true)
+      expect((bound.envelope.value as { mirrorPath: string }).mirrorPath).toBe(mirrorPath)
+
+      // Upgrade to git: remote attached, history spliced, content intact.
+      const upgraded = await call(routes, '/overleaf/upgrade-transport', { mirrorPath })
+      expect(upgraded.envelope.ok).toBe(true)
+      const upgrade = upgraded.envelope.value as { transport: string; branch: string }
+      expect(upgrade.transport).toBe('git')
+      expect(upgrade.branch).toBe('main')
+      await expect(readFile(join(mirrorPath, 'remote.tex'), 'utf8')).resolves.toBe('from overleaf\n')
+      await expect(readFile(join(mirrorPath, 'local.tex'), 'utf8')).resolves.toBe('local edits\n')
+      const log = spawnSync('git', ['log', '--oneline'], { cwd: mirrorPath, encoding: 'utf8' })
+      expect(log.stdout).toContain('bridge history')
+
+      // Push publishes the spliced local commit onto the bridge.
+      const pushed = await call(routes, '/overleaf/sync', { mirrorPath, direction: 'push' })
+      expect(pushed.envelope.ok).toBe(true)
+      spawnSync('git', ['pull', 'origin', 'main'], { cwd: seed })
+      const pulledLocal = await readFile(join(seed, 'local.tex'), 'utf8')
+      expect(pulledLocal.replace(/\r\n/g, '\n')).toBe('local edits\n')
+
+      // The binding file now records git transport.
+      await expect(readFile(join(mirrorPath, '.overleaf.json'), 'utf8')).resolves.toContain('"git"')
     } finally {
       vi.unstubAllGlobals()
     }

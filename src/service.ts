@@ -1,5 +1,5 @@
 /**
- * dsh-overleaf host plugin. Exported as a Cordis Service class (the loader
+ * dsh-better-overleaf host plugin. Exported as a Cordis Service class (the loader
  * instantiates default service classes), so mounting the row provides
  * `ctx.overleaf` and registers the /overleaf routes.
  *
@@ -19,17 +19,24 @@ import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
 import type {} from '@deepseek-ai/dsh-credentials'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { OVERLEAF_COOKIE, OVERLEAF_GIT_TOKEN } from './credentials.ts'
+import { compileMirror, hasLatexmk } from './compile.ts'
 import { loginWithPlaywright } from './login-cdp.ts'
 import type { LoginProfileMode, OverleafBrowserChannel } from './login-cdp.ts'
-import { allocateMirrorDir, listWorkspaceBindings, readBinding, removeBinding, safeMirrorName, writeBinding } from './paths.ts'
+import { allocateMirrorDir, isClaimableMirror, listWorkspaceBindings, readBinding, removeBinding, safeMirrorName, writeBinding } from './paths.ts'
 import {
-  OverleafApiTransport, OverleafGitTransport, apiSnapshotPull, commitAll, extractZip, runGit,
+  loadRegistry, markSynced, removeRegistryBinding, savePolicy, upsertRegistryBinding,
+} from './registry.ts'
+import {
+  OverleafApiTransport, OverleafGitTransport, apiSnapshotPull, apiSnapshotPush, commitAll, extractZip, runGit,
 } from './transports.ts'
 import type { OverleafSession } from './transports.ts'
+import { registerOverleafTools } from './tools.ts'
 import type {
-  OverleafBinding, OverleafLoginResult, OverleafProject, OverleafStatus, OverleafSyncDirection,
-  OverleafSyncResult, OverleafTransportKind, OverleafWireResponse,
+  OverleafAutoSyncPolicy, OverleafBinding, OverleafCompileResult, OverleafLoginResult, OverleafProject,
+  OverleafRemoteStatus, OverleafStatus, OverleafSyncDirection, OverleafSyncResult, OverleafTransportKind,
+  OverleafWireResponse,
 } from './types.ts'
+import { AUTO_PULL_INTERVAL_MS } from './types.ts'
 
 /** Stable Cordis plugin name. */
 export const name = 'overleaf'
@@ -175,6 +182,10 @@ export class OverleafService extends Service {
   private readonly config: ResolvedConfig
   private readonly api: OverleafApiTransport
   private readonly git: OverleafGitTransport
+  /** Mirrors currently mid-sync, keyed by path (background + foreground interlock). */
+  private readonly syncInFlight = new Set<string>()
+  /** Auto-sync timer, rescheduled whenever the policy changes. */
+  private autoSyncTimer: NodeJS.Timeout | undefined
 
   constructor(ctx: Context, config: Config) {
     super(ctx, 'overleaf')
@@ -182,6 +193,13 @@ export class OverleafService extends Service {
     this.api = new OverleafApiTransport(this.config.baseUrl)
     this.git = new OverleafGitTransport(this.config.gitOrigin)
     this.registerRoutes()
+    registerOverleafTools(ctx, this)
+    ctx.effect(() => {
+      void this.rescheduleAutoSync()
+      return (): void => {
+        if (this.autoSyncTimer !== undefined) clearTimeout(this.autoSyncTimer)
+      }
+    }, 'dsh-better-overleaf: auto-sync scheduler')
   }
 
   /** Register one exact JSON route with the shared envelope contract. */
@@ -201,7 +219,7 @@ export class OverleafService extends Service {
           sendError(res, error)
         }
       },
-    }), `dsh-overleaf: route ${path}`)
+    }), `dsh-better-overleaf: route ${path}`)
   }
 
   private registerRoutes(): void {
@@ -251,6 +269,37 @@ export class OverleafService extends Service {
         throw new Error('overleaf: sync requires mirrorPath and direction "pull" | "push"')
       }
       return this.sync(mirrorPath, direction)
+    })
+    this.route('/overleaf/remote-status', (payload) => {
+      const mirrorPath = stringField(payload, 'mirrorPath')
+      if (mirrorPath === undefined) throw new Error('overleaf: remote-status requires mirrorPath')
+      return this.remoteStatus(mirrorPath)
+    })
+    this.route('/overleaf/compile', (payload) => {
+      const mirrorPath = stringField(payload, 'mirrorPath')
+      if (mirrorPath === undefined) throw new Error('overleaf: compile requires mirrorPath')
+      return this.compile(mirrorPath)
+    })
+    this.route('/overleaf/latexmk', async () => ({ available: await hasLatexmk() }))
+    this.route('/overleaf/upgrade-transport', (payload) => {
+      const mirrorPath = stringField(payload, 'mirrorPath')
+      if (mirrorPath === undefined) throw new Error('overleaf: upgrade-transport requires mirrorPath')
+      return this.upgradeToGit(mirrorPath)
+    })
+    this.route('/overleaf/auto-sync', () => this.getAutoSync())
+    this.route('/overleaf/auto-sync/set', (payload) => {
+      const raw = typeof payload === 'object' && payload !== null ? (payload as { policy?: unknown }).policy : undefined
+      if (typeof raw !== 'object' || raw === null) throw new Error('overleaf: auto-sync/set requires policy')
+      const candidate = raw as Partial<OverleafAutoSyncPolicy>
+      const interval = candidate.autoPullInterval
+      if (interval !== 'off' && interval !== '5m' && interval !== '15m' && interval !== '30m' && interval !== '1h') {
+        throw new Error('overleaf: autoPullInterval must be one of off | 5m | 15m | 30m | 1h')
+      }
+      return this.setAutoSync({
+        autoPullInterval: interval,
+        autoPush: candidate.autoPush === true,
+        autoCommitLocal: candidate.autoCommitLocal !== false,
+      })
     })
   }
 
@@ -351,10 +400,24 @@ export class OverleafService extends Service {
       projectName = project.name
     }
     const requested = input.transport === 'git' || input.transport === 'api' ? input.transport : this.config.transport
-    const mirrorPath = await allocateMirrorDir(
-      workspacePath,
-      input.name?.trim() !== '' && input.name !== undefined ? input.name.trim() : safeMirrorName(projectName, projectId),
-    )
+    // Claim semantics: when a directory with this name already exists and is a
+    // git repository, adopt it instead of allocating a fresh mirror. This is
+    // how a mirror whose binding file was lost (older snapshot pulls wiped it)
+    // is re-bound without duplicating or touching its files.
+    const desiredName = input.name?.trim() !== '' && input.name !== undefined ? input.name.trim() : safeMirrorName(projectName, projectId)
+    const existingDir = join(workspacePath, 'overleaf', desiredName)
+    if (await isClaimableMirror(existingDir)) {
+      const binding: OverleafBinding = {
+        projectId,
+        projectName,
+        mirrorPath: existingDir,
+        transport: input.transport === 'git' || input.transport === 'api' || input.transport === 'auto' ? input.transport : 'auto',
+      }
+      await writeBinding(binding)
+      await upsertRegistryBinding({ projectId, projectName, mirrorPath: existingDir, workspacePath }).catch(() => undefined)
+      return binding
+    }
+    const mirrorPath = await allocateMirrorDir(workspacePath, desiredName)
     const binding: OverleafBinding = {
       projectId,
       projectName,
@@ -374,6 +437,14 @@ export class OverleafService extends Service {
       throw error
     }
     await writeBinding(binding)
+    // Index the mirror for the background auto-sync scheduler (registry is
+    // best-effort: a failed write only disables auto-sync, never the bind).
+    await upsertRegistryBinding({
+      projectId,
+      projectName,
+      mirrorPath,
+      workspacePath,
+    }).catch(() => undefined)
     return binding
   }
 
@@ -395,7 +466,7 @@ export class OverleafService extends Service {
   private async seedApiMirror(projectId: string, mirrorPath: string): Promise<void> {
     const session = await this.sessionFor('api')
     const zip = await this.api.downloadZip(projectId, session)
-    const tempDir = await mkdtemp(join(tmpdir(), 'dsh-overleaf-bind-'))
+    const tempDir = await mkdtemp(join(tmpdir(), 'dsh-better-overleaf-bind-'))
     const zipPath = join(tempDir, 'snapshot.zip')
     try {
       await writeFile(zipPath, zip)
@@ -409,7 +480,9 @@ export class OverleafService extends Service {
 
   /** Remove one mirror's binding file; the files themselves stay on disk. */
   async unbind(mirrorPath: string): Promise<boolean> {
-    return await removeBinding(mirrorPath)
+    const removed = await removeBinding(mirrorPath)
+    if (removed) await removeRegistryBinding(mirrorPath).catch(() => undefined)
+    return removed
   }
 
   /** Resolve the effective sync transport for one binding. */
@@ -420,41 +493,266 @@ export class OverleafService extends Service {
 
   /**
    * Pick the sync transport for one operation, degrading git→api on a missing
-   * git credential for pulls so free accounts still get one-way sync.
+   * git credential: pulls fall back to zip snapshots and pushes to the website
+   * upload endpoints, so free accounts get full two-way sync.
    */
   private async syncTransport(binding: OverleafBinding, direction: OverleafSyncDirection): Promise<OverleafTransportKind> {
     const kind = this.effectiveTransport(binding.transport)
     if (kind === 'git') {
       const gitToken = await this.ctx.credentials.describe(OVERLEAF_GIT_TOKEN)
       if (gitToken.configured) return 'git'
-      if (direction === 'pull') {
-        const cookie = await this.ctx.credentials.describe(OVERLEAF_COOKIE)
-        if (cookie.configured) return 'api'
-      }
-      throw new Error('overleaf: OVERLEAF_GIT_TOKEN is not configured; store the git-bridge credential first')
+      const cookie = await this.ctx.credentials.describe(OVERLEAF_COOKIE)
+      if (cookie.configured) return 'api'
+      throw new Error(direction === 'push'
+        ? 'overleaf: 尚未配置任何凭据；请先登录 Overleaf（快照推送）或配置 Git 令牌（Git 双向）'
+        : 'overleaf: OVERLEAF_GIT_TOKEN is not configured and no web session is available; log in or store the git-bridge credential first')
     }
     return 'api'
   }
 
-  /** Sync one bound mirror in the requested direction. */
+  /** Sync one bound mirror in the requested direction (rebase-style pull, guarded push). */
   async sync(mirrorPath: string, direction: OverleafSyncDirection, signal?: AbortSignal): Promise<OverleafSyncResult> {
     const binding = await readBinding(mirrorPath)
     if (binding === undefined) throw new Error('overleaf: directory is not bound; bind a project first')
     const kind = await this.syncTransport(binding, direction)
-    if (kind === 'git') {
-      return await this.git.sync(binding, direction, await this.sessionFor('git'), signal)
+    if (this.syncInFlight.has(mirrorPath)) {
+      throw new Error('overleaf: 该镜像正在同步中，请稍后再试')
     }
-    if (direction === 'push') {
-      throw new Error('overleaf: the API transport cannot push; configure the git-bridge credential to push')
+    this.syncInFlight.add(mirrorPath)
+    try {
+      const autoCommit = (await this.getAutoSync()).autoCommitLocal
+      const result = kind === 'git'
+        ? direction === 'pull'
+          ? await this.git.smartPull(binding, await this.sessionFor('git'), {
+              autoCommit,
+              ...(signal !== undefined ? { signal } : {}),
+            })
+          : await this.git.smartPush(binding, await this.sessionFor('git'), {
+              autoCommit,
+              ...(signal !== undefined ? { signal } : {}),
+            })
+        : direction === 'pull'
+          ? await this.apiPull(binding, signal)
+          : await apiSnapshotPush(binding, this.api, { ...(await this.sessionFor('api')), origin: this.config.baseUrl }, {
+              ...(signal !== undefined ? { signal } : {}),
+            })
+      await markSynced(mirrorPath).catch(() => undefined)
+      return result
+    } finally {
+      this.syncInFlight.delete(mirrorPath)
     }
+  }
+
+  /** One-way snapshot pull through the API transport (free-account fallback). */
+  private async apiPull(binding: OverleafBinding, signal?: AbortSignal): Promise<OverleafSyncResult> {
     const zip = await this.api.downloadZip(binding.projectId, await this.sessionFor('api'))
     const message = await apiSnapshotPull(binding, zip, await this.sessionFor('api'), signal)
     return {
-      direction,
+      direction: 'pull',
       projectId: binding.projectId,
-      mirrorPath,
+      mirrorPath: binding.mirrorPath,
       transport: 'api',
       message,
+    }
+  }
+
+  /**
+   * Live remote position of one mirror. Git mirrors fetch and count; API
+   * mirrors (no git remote) degrade to local-only facts with
+   * `remoteAvailable: false` so the tab can explain why.
+   */
+  async remoteStatus(mirrorPath: string, signal?: AbortSignal): Promise<OverleafRemoteStatus> {
+    const binding = await readBinding(mirrorPath)
+    if (binding === undefined) throw new Error('overleaf: directory is not bound; bind a project first')
+    const kind = await this.syncTransport(binding, 'pull').catch(() => 'api' as OverleafTransportKind)
+    const statusOutput = await runGit(['status', '--porcelain'], mirrorPath, {}, signal)
+    const dirtyLines = statusOutput.split('\n').filter(line => line.trim() !== '')
+    const localCommitTime = await runGit(['log', '-1', '--format=%cI', 'HEAD'], mirrorPath, {}, signal)
+      .then(out => out.trim(), () => undefined)
+    const lastSync = await loadRegistry().then(registry => registry.lastSync[mirrorPath])
+    if (kind !== 'git') {
+      return {
+        projectId: binding.projectId,
+        mirrorPath,
+        transport: 'api',
+        branch: '',
+        ahead: 0,
+        behind: 0,
+        diverged: false,
+        dirty: dirtyLines.length > 0,
+        dirtyCount: dirtyLines.length,
+        ...(localCommitTime !== undefined && localCommitTime !== '' ? { localCommitTime } : {}),
+        ...(lastSync !== undefined ? { lastSyncTime: lastSync } : {}),
+        remoteAvailable: false,
+      }
+    }
+    const status = await this.git.readStatus(binding, await this.sessionFor('git'), signal)
+    return {
+      projectId: binding.projectId,
+      mirrorPath,
+      transport: 'git',
+      branch: status.branch,
+      ahead: status.ahead,
+      behind: status.behind,
+      diverged: status.diverged,
+      dirty: status.dirty,
+      dirtyCount: status.dirtyCount,
+      ...(status.remoteCommitTime !== undefined ? { remoteCommitTime: status.remoteCommitTime } : {}),
+      ...(status.localCommitTime !== undefined ? { localCommitTime: status.localCommitTime } : {}),
+      ...(lastSync !== undefined ? { lastSyncTime: lastSync } : {}),
+      remoteAvailable: true,
+    }
+  }
+
+  /** Compile one mirror locally with latexmk. */
+  async compile(mirrorPath: string, signal?: AbortSignal): Promise<OverleafCompileResult> {
+    const binding = await readBinding(mirrorPath)
+    if (binding === undefined) throw new Error('overleaf: directory is not bound; bind a project first')
+    return await compileMirror(mirrorPath, signal !== undefined ? { signal } : {})
+  }
+
+  /**
+   * Upgrade a snapshot-only mirror to two-way git sync without touching its
+   * files: attach the Overleaf git remote, splice the local snapshot content
+   * on top of the remote history via a soft reset + commit, and flip the
+   * binding's transport. The user still chooses when to push.
+   */
+  async upgradeToGit(mirrorPath: string, signal?: AbortSignal): Promise<OverleafBinding & { branch: string; message: string }> {
+    const binding = await readBinding(mirrorPath)
+    if (binding === undefined) throw new Error('overleaf: directory is not bound; bind a project first')
+    if (binding.transport === 'git') throw new Error('overleaf: 该镜像已经是 Git 双向同步模式')
+    const token = await this.ctx.credentials.describe(OVERLEAF_GIT_TOKEN)
+    if (!token.configured) {
+      throw new Error('overleaf: 切换 Git 双向同步需要先在「设置 → 连接 Overleaf」中配置 Git 令牌（Overleaf 付费功能）')
+    }
+    const session = await this.sessionFor('git')
+    const remoteUrl = this.git.remote(binding.projectId)
+    const hasRemote = await this.git.hasRemote(mirrorPath, session, signal)
+    await runGit(
+      hasRemote ? ['remote', 'set-url', 'origin', remoteUrl] : ['remote', 'add', 'origin', remoteUrl],
+      mirrorPath,
+      session,
+      signal,
+    )
+    // Commit pending edits so the soft reset below cannot lose them.
+    await commitAll(mirrorPath, `同步本地修改 (${new Date().toISOString()})`, session, signal)
+    await runGit(['fetch', 'origin', '--prune'], mirrorPath, session, signal)
+    // Resolve the remote's default branch: prefer origin/HEAD, then the first
+    // real branch. Bare `origin` (a HEAD symref entry) and `origin/HEAD`
+    // itself must never be treated as a branch — resetting onto them mangles
+    // the index (observed: the remote's files got deleted on upgrade).
+    const headRef = await runGit(
+      ['rev-parse', '--abbrev-ref', 'origin/HEAD'],
+      mirrorPath,
+      session,
+      signal,
+    ).then(out => out.trim(), () => '')
+    let branch = headRef.startsWith('origin/') ? headRef.slice('origin/'.length) : ''
+    if (branch === '') {
+      branch = (await runGit(
+        ['for-each-ref', '--format=%(refname:short)', 'refs/remotes/origin'],
+        mirrorPath,
+        session,
+        signal,
+      ))
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line.startsWith('origin/') && !line.endsWith('/HEAD'))[0]
+        ?.slice('origin/'.length) ?? ''
+    }
+    if (branch === undefined) {
+      throw new Error('overleaf: 远端没有任何分支；确认该项目在 Overleaf 上仍可见后重试')
+    }
+    // Splice: move HEAD onto the remote history, keep the working tree, then
+    // commit the snapshot content as one local commit on top of it. A remote
+    // newer than the snapshot would be overwritten by that commit, so refuse
+    // and let the user pull a fresh snapshot first.
+    const remoteTime = Number.parseInt(
+      await runGit(['log', '-1', '--format=%ct', `origin/${branch}`], mirrorPath, session, signal),
+      10,
+    )
+    const snapshotTime = Number.parseInt(
+      await runGit(['log', '-1', '--format=%ct', 'HEAD'], mirrorPath, session, signal),
+      10,
+    )
+    if (Number.isFinite(remoteTime) && Number.isFinite(snapshotTime) && remoteTime > snapshotTime) {
+      throw new Error('overleaf: 远端比本地快照新，请先「拉取更新」同步到最新快照，再切换 Git 双向同步（否则会覆盖 Overleaf 上的新修改）')
+    }
+    await runGit(['reset', '--soft', `origin/${branch}`], mirrorPath, session, signal)
+    await commitAll(mirrorPath, '从网页快照迁移到 Git 双向同步', session, signal)
+    const upgraded: OverleafBinding & { branch: string; message: string } = {
+      ...binding,
+      transport: 'git',
+      branch,
+      message: `已切换为 Git 双向同步（分支 ${branch}）；本地内容尚未推送，确认无误后点「推送修改」发布`,
+    }
+    await writeBinding({ projectId: binding.projectId, projectName: binding.projectName, mirrorPath, transport: 'git' })
+    await upsertRegistryBinding({
+      projectId: binding.projectId,
+      projectName: binding.projectName,
+      mirrorPath,
+    }).catch(() => undefined)
+    return upgraded
+  }
+
+  /** Current auto-sync policy. */
+  async getAutoSync(): Promise<OverleafAutoSyncPolicy> {
+    return (await loadRegistry()).policy
+  }
+
+  /** Persist a new auto-sync policy and reschedule the background puller. */
+  async setAutoSync(policy: OverleafAutoSyncPolicy): Promise<OverleafAutoSyncPolicy> {
+    await savePolicy(policy)
+    await this.rescheduleAutoSync()
+    return policy
+  }
+
+  /** Restart the background scheduler from the persisted policy. */
+  private async rescheduleAutoSync(): Promise<void> {
+    if (this.autoSyncTimer !== undefined) clearTimeout(this.autoSyncTimer)
+    const policy = await this.getAutoSync()
+    const intervalMs = AUTO_PULL_INTERVAL_MS[policy.autoPullInterval] ?? 0
+    if (intervalMs <= 0) return
+    this.autoSyncTimer = setTimeout(() => {
+      void this.runAutoSyncCycle().finally(() => { void this.rescheduleAutoSync() })
+    }, intervalMs)
+  }
+
+  /**
+   * One background pass: pull every registered mirror that still carries a
+   * binding file, optionally pushing afterwards. Dirty mirrors are pulled
+   * only when auto-commit is on (otherwise they are skipped — pushing the
+   * user's half-written work silently would be worse than waiting).
+   */
+  private async runAutoSyncCycle(): Promise<void> {
+    const registry = await loadRegistry()
+    const policy = registry.policy
+    for (const entry of registry.bindings) {
+      if (this.syncInFlight.has(entry.mirrorPath)) continue
+      const binding = await readBinding(entry.mirrorPath).catch(() => undefined)
+      if (binding === undefined) continue
+      if (this.syncInFlight.has(entry.mirrorPath)) continue
+      this.syncInFlight.add(entry.mirrorPath)
+      try {
+        const kind = await this.syncTransport(binding, 'pull').catch(() => undefined)
+        if (kind === undefined) continue
+        if (kind === 'git') {
+          const session = await this.sessionFor('git')
+          await this.git.smartPull(binding, session, { autoCommit: policy.autoCommitLocal })
+          if (policy.autoPush) {
+            await this.git.smartPush(binding, session, { autoCommit: policy.autoCommitLocal })
+          }
+        } else {
+          await this.apiPull(binding)
+        }
+        await markSynced(entry.mirrorPath).catch(() => undefined)
+      } catch (error) {
+        // Background sync never throws into the host; the tab surfaces the
+        // state on its next check.
+        console.warn(`[dsh-better-overleaf] auto-sync skipped ${entry.projectName}:`, error instanceof Error ? error.message : error)
+      } finally {
+        this.syncInFlight.delete(entry.mirrorPath)
+      }
     }
   }
 }
