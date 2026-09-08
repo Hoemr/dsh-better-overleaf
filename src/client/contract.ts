@@ -5,7 +5,7 @@
  * This is a structural mirror of `dsh-better-sidebar/client/service`'s
  * `TabDescriptor`/`TabComponentProps`/`BetterSidebarService` subset dsh-better-overleaf
  * uses, so the repository still builds when the optional peer is not installed.
- * Aligned with dsh-better-sidebar 0.13.x / 0.14.x.
+ * Aligned with dsh-better-sidebar 0.18.x (the peer range the manifest declares).
  */
 import type { ReactNode } from 'react'
 
@@ -68,7 +68,7 @@ export interface OpenTabSeed {
 }
 
 /**
- * Structural mirror of better-sidebar's `FileViewerDescriptor` (0.17.x). A
+ * Structural mirror of better-sidebar's `FileViewerDescriptor` (0.17.x+, unchanged in 0.18.x). A
  * descriptor claims one file extension with a priority: higher wins over
  * built-ins (which register at 0).
  */

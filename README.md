@@ -30,6 +30,19 @@ dsh-better-sidebar workbench   ← explorer / editor / preview / Git panel / @�
 Credentials never enter the browser bundle or route payloads: the host resolves
 `OVERLEAF_COOKIE` and `OVERLEAF_GIT_TOKEN` through `ctx.credentials`.
 
+## Compatibility
+
+`0.2.2` is aligned with DSH Desktop 2.0.5 / `@deepseek-ai/dsh` `0.1.2-rc.1`:
+
+- peer deps are `@deepseek-ai/cordis ^4.0.2`, `@deepseek-ai/dsh-credentials`,
+  `@deepseek-ai/dsh-host-webserver`, `@deepseek-ai/dsh-tools` at
+  `^0.1.2-rc.1`, and `dsh-better-sidebar >=0.13.1 <0.19`;
+- `dsh.client.inject` names `dsh-better-sidebar` (the client-module graph edge
+  that guarantees the sidebar bundle arrives first). The retired
+  `@deepseek-ai/dsh-client-runtime` package no longer exists in the harness —
+  the client module system is `@deepseek-ai/dsh-client-modules`, which the shell
+  loads itself.
+
 ## Login
 
 Direct-CDP login launches an installed Chromium-family browser with a loopback
@@ -59,8 +72,8 @@ Third-party Chromium browsers (CentBrowser, Brave, Vivaldi, …) are supported:
 ## Install
 
 ```sh
-dsh plugin --profile desktop add dsh-better-sidebar@0.13.1    # or @0.14+ on DSH rc.8
-dsh plugin --profile desktop add dsh-better-overleaf@0.2.1
+dsh plugin --profile desktop add dsh-better-sidebar@0.18.0   # >=0.13.1 <0.19
+dsh plugin --profile desktop add dsh-better-overleaf@0.2.2
 # then restart the app so the host halves mount; hard-refresh the web view
 
 # dev flow:
