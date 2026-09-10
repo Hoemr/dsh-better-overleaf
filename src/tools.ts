@@ -53,8 +53,8 @@ export function registerOverleafTools(ctx: Context, service: OverleafService): v
     const workspaceOf = (exec: ToolExec): string | undefined => {
       const sessionId = sessionIdOf(exec)
       if (sessionId === undefined) return undefined
-      const headerCwd = (ctx as Context & { sessions?: { get: (id: string) => { header: { cwd?: string } } | undefined } })
-        .sessions?.get(sessionId)?.header.cwd
+      const headerCwd = (ctx.reflect.get('sessions') as { get: (id: string) => { header: { cwd?: string } } | undefined } | undefined)
+        ?.get(sessionId)?.header.cwd
       return headerCwd !== undefined && headerCwd !== '' ? headerCwd : undefined
     }
 
