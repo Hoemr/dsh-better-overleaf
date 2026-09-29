@@ -32,16 +32,29 @@ Credentials never enter the browser bundle or route payloads: the host resolves
 
 ## Compatibility
 
-`0.2.2` is aligned with DSH Desktop 2.0.5 / `@deepseek-ai/dsh` `0.1.2-rc.1`:
+| version | verified DSH | verified dsh-better-sidebar |
+|---|---|---|
+| `0.2.4` | `@deepseek-ai/dsh` `0.2.0-rc.2` (DSH Desktop 0.2.0-rc.2, Node 24.18.1 / Electron 44) | `0.24.1` |
+| `0.2.3` | `0.1.7-rc.2` | `0.21.1` |
 
 - peer deps are `@deepseek-ai/cordis ^4.0.2`, `@deepseek-ai/dsh-credentials`,
   `@deepseek-ai/dsh-host-webserver`, `@deepseek-ai/dsh-tools` at
-  `^0.1.2-rc.1`, and `dsh-better-sidebar >=0.13.1 <0.19`;
+  `>=0.1.2-rc.1 <0.3.0-0`, and `dsh-better-sidebar >=0.13.1 <0.25.0-0`.
+  The 0.2.0-rc.2 boot loader checks every `@deepseek-ai/dsh*` peer against the
+  running runtime with prereleases included, so a range that stops at `<0.2.0-0`
+  makes profile startup *deny* the plugin (it stays installed, nothing mounts).
+- The build resolves `@deepseek-ai/schemastery ~3.18.4`, the version the 0.1.7
+  and 0.2.0 lines ship.
 - `dsh.client.inject` names `dsh-better-sidebar` (the client-module graph edge
   that guarantees the sidebar bundle arrives first). The retired
   `@deepseek-ai/dsh-client-runtime` package no longer exists in the harness —
   the client module system is `@deepseek-ai/dsh-client-modules`, which the shell
-  loads itself.
+  loads itself. The tab/viewer contract this plugin consumes was re-checked
+  against dsh-better-sidebar 0.24.1: `ctx.betterSidebar`, `registerTab`,
+  `registerFileViewer`, `openTab`/`openFile`, every descriptor field and read
+  prop, and the badge callback are unchanged from 0.18.x. One behavior note:
+  from 0.19 `openTab` prefers the native right Sidebar, so the “Files” tab it
+  opens lands there instead of the older bottom workbench.
 
 ## Login
 
@@ -72,8 +85,8 @@ Third-party Chromium browsers (CentBrowser, Brave, Vivaldi, …) are supported:
 ## Install
 
 ```sh
-dsh plugin --profile desktop add dsh-better-sidebar@0.18.0   # >=0.13.1 <0.19
-dsh plugin --profile desktop add dsh-better-overleaf@0.2.2
+dsh plugin --profile desktop add dsh-better-sidebar   # >=0.13.1 <0.25.0-0
+dsh plugin --profile desktop add dsh-better-overleaf@0.2.4
 # then restart the app so the host halves mount; hard-refresh the web view
 
 # dev flow:

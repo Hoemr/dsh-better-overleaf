@@ -5,12 +5,13 @@
  * This is a structural mirror of `dsh-better-sidebar/client/service`'s
  * `TabDescriptor`/`TabComponentProps`/`BetterSidebarService` subset dsh-better-overleaf
  * uses, so the repository still builds when the optional peer is not installed.
- * Verified against dsh-better-sidebar 0.21.1: the mirrored subset
+ * Verified against dsh-better-sidebar 0.21.1 and 0.24.1: the mirrored subset
  * (`registerTab`, `registerFileViewer`, `openTab`, `openFile`, `SessionScope`,
  * the `TabDescriptor` fields, and the `FileViewerDescriptor` fetch strategies)
- * is unchanged there — 0.19–0.21 only added optional fields
+ * is unchanged there — 0.19–0.24 only added optional fields
  * (`description`, `dedupeKey`, `createTab`, `urlTarget`, `settings`, and the
- * tab lifecycle callbacks).
+ * tab lifecycle callbacks). 0.24 also serves `openTab` from the native right
+ * Sidebar, which changes where a tab lands but not this contract.
  */
 import type { ReactNode } from 'react'
 
